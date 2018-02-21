@@ -319,6 +319,9 @@ static void ftruncate_cb(uv_fs_t* req) {
   ASSERT(r == 0);
 }
 
+static void fail_cb(uv_fs_t* req) {
+  FATAL("fail_cb should not have been called");
+}
 
 static void read_cb(uv_fs_t* req) {
   int r;
@@ -469,19 +472,10 @@ static void mkdtemp_cb(uv_fs_t* req) {
 static void rmdir_cb(uv_fs_t* req) {
   ASSERT(req == &rmdir_req);
   ASSERT(req->fs_type == UV_FS_RMDIR);
+  ASSERT(req->result == 0);
+  rmdir_cb_count++;
   ASSERT(req->path);
-  switch (rmdir_cb_count++) {
-    default:
-      ASSERT(0);
-    case 0:
-      ASSERT(req->result == UV_ENOTDIR);
-      ASSERT(memcmp(req->path, "test_dir/file1\0", 15) == 0);
-      break;
-    case 1:
-      ASSERT(req->result == 0);
-      ASSERT(memcmp(req->path, "test_dir\0", 9) == 0);
-      break;
-  }
+  ASSERT(memcmp(req->path, "test_dir\0", 9) == 0);
   uv_fs_req_cleanup(req);
 }
 
@@ -995,11 +989,6 @@ TEST_IMPL(fs_async_dir) {
 
   ASSERT(stat_cb_count == 4);
 
-  r = uv_fs_rmdir(loop, &rmdir_req, "test_dir/file1", rmdir_cb);
-  ASSERT(r == 0);
-  uv_run(loop, UV_RUN_DEFAULT);
-  ASSERT(rmdir_cb_count == 1);
-
   r = uv_fs_unlink(loop, &unlink_req, "test_dir/file1", unlink_cb);
   ASSERT(r == 0);
   uv_run(loop, UV_RUN_DEFAULT);
@@ -1013,7 +1002,7 @@ TEST_IMPL(fs_async_dir) {
   r = uv_fs_rmdir(loop, &rmdir_req, "test_dir", rmdir_cb);
   ASSERT(r == 0);
   uv_run(loop, UV_RUN_DEFAULT);
-  ASSERT(rmdir_cb_count == 2);
+  ASSERT(rmdir_cb_count == 1);
 
   /* Cleanup */
   unlink("test_dir/file1");
@@ -2890,131 +2879,6 @@ TEST_IMPL(fs_write_alotof_bufs_with_offset) {
 }
 
 
-#ifdef _WIN32
-
-TEST_IMPL(fs_partial_read) {
-  RETURN_SKIP("Test not implemented on Windows.");
-}
-
-TEST_IMPL(fs_partial_write) {
-  RETURN_SKIP("Test not implemented on Windows.");
-}
-
-#else  /* !_WIN32 */
-
-static void thread_exec(int fd, char* data, int size, int interval, int doread) {
-  pid_t pid;
-  ssize_t result;
-
-  pid = getpid();
-  result = 1;
-
-  while (size > 0 && result > 0) {
-    do {
-      if (doread)
-        result = write(fd, data, size < interval ? size : interval);
-      else
-        result = read(fd, data, size < interval ? size : interval);
-    } while (result == -1 && errno == EINTR);
-
-    kill(pid, SIGUSR1);
-    size -= result;
-    data += result;
-  }
-
-  ASSERT(size == 0);
-  ASSERT(result > 0);
-}
-
-struct thread_ctx {
-  int fd;
-  char *data;
-  int size;
-  int interval;
-  int doread;
-};
-
-static void thread_main(void* arg) {
-  struct thread_ctx *ctx;
-  ctx = (struct thread_ctx*)arg;
-  thread_exec(ctx->fd, ctx->data, ctx->size, ctx->interval, ctx->doread);
-}
-
-static void sig_func(uv_signal_t* handle, int signum) {
-  uv_signal_stop(handle);
-}
-
-static void test_fs_partial(int doread) {
-  struct thread_ctx ctx;
-  uv_thread_t thread;
-  uv_signal_t signal;
-  int pipe_fds[2];
-  size_t iovcount;
-  uv_buf_t* iovs;
-  char* buffer;
-  size_t index;
-  int result;
-
-  iovcount = 54321;
-
-  iovs = malloc(sizeof(*iovs) * iovcount);
-  ASSERT(iovs != NULL);
-
-  ctx.doread = doread;
-  ctx.interval = 1000;
-  ctx.size = sizeof(test_buf) * iovcount;
-  ctx.data = malloc(ctx.size);
-  ASSERT(ctx.data != NULL);
-  buffer = malloc(ctx.size);
-  ASSERT(buffer != NULL);
-
-  for (index = 0; index < iovcount; ++index)
-    iovs[index] = uv_buf_init(buffer + index * sizeof(test_buf), sizeof(test_buf));
-
-  loop = uv_default_loop();
-
-  ASSERT(0 == uv_signal_init(loop, &signal));
-  ASSERT(0 == uv_signal_start(&signal, sig_func, SIGUSR1));
-
-  ASSERT(0 == pipe(pipe_fds));
-
-  ctx.fd = pipe_fds[doread];
-  ASSERT(0 == uv_thread_create(&thread, thread_main, &ctx));
-
-  if (doread)
-    result = uv_fs_read(loop, &read_req, pipe_fds[0], iovs, iovcount, -1, NULL);
-  else
-    result = uv_fs_write(loop, &write_req, pipe_fds[1], iovs, iovcount, -1, NULL);
-
-  ASSERT(result == ctx.size);
-  ASSERT(0 == memcmp(buffer, ctx.data, result));
-
-  ASSERT(0 == uv_thread_join(&thread));
-  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
-
-  ASSERT(0 == close(pipe_fds[0]));
-  ASSERT(0 == close(pipe_fds[1]));
-  uv_close((uv_handle_t*) &signal, NULL);
-
-  free(iovs);
-  free(buffer);
-  free(ctx.data);
-
-  MAKE_VALGRIND_HAPPY();
-}
-
-TEST_IMPL(fs_partial_read) {
-  test_fs_partial(1);
-  return 0;
-}
-
-TEST_IMPL(fs_partial_write) {
-  test_fs_partial(0);
-  return 0;
-}
-
-#endif/* _WIN32 */
-
 TEST_IMPL(fs_read_write_null_arguments) {
   int r;
 
@@ -3023,7 +2887,19 @@ TEST_IMPL(fs_read_write_null_arguments) {
   uv_fs_req_cleanup(&read_req);
 
   r = uv_fs_write(NULL, &write_req, 0, NULL, 0, -1, NULL);
+  /* Validate some memory management on failed input validation before sending
+     fs work to the thread pool. */
   ASSERT(r == UV_EINVAL);
+  ASSERT(write_req.path == NULL);
+  ASSERT(write_req.ptr == NULL);
+#ifdef _WIN32
+  ASSERT(write_req.file.pathw == NULL);
+  ASSERT(write_req.fs.info.new_pathw == NULL);
+  ASSERT(write_req.fs.info.bufs == NULL);
+#else
+  ASSERT(write_req.new_path == NULL);
+  ASSERT(write_req.bufs == NULL);
+#endif
   uv_fs_req_cleanup(&write_req);
 
   iov = uv_buf_init(NULL, 0);
@@ -3034,6 +2910,31 @@ TEST_IMPL(fs_read_write_null_arguments) {
   iov = uv_buf_init(NULL, 0);
   r = uv_fs_write(NULL, &write_req, 0, &iov, 0, -1, NULL);
   ASSERT(r == UV_EINVAL);
+  uv_fs_req_cleanup(&write_req);
+
+  /* If the arguments are invalid, the loop should not be kept open */
+  loop = uv_default_loop();
+
+  r = uv_fs_read(loop, &read_req, 0, NULL, 0, -1, fail_cb);
+  ASSERT(r == UV_EINVAL);
+  uv_run(loop, UV_RUN_DEFAULT);
+  uv_fs_req_cleanup(&read_req);
+
+  r = uv_fs_write(loop, &write_req, 0, NULL, 0, -1, fail_cb);
+  ASSERT(r == UV_EINVAL);
+  uv_run(loop, UV_RUN_DEFAULT);
+  uv_fs_req_cleanup(&write_req);
+
+  iov = uv_buf_init(NULL, 0);
+  r = uv_fs_read(loop, &read_req, 0, &iov, 0, -1, fail_cb);
+  ASSERT(r == UV_EINVAL);
+  uv_run(loop, UV_RUN_DEFAULT);
+  uv_fs_req_cleanup(&read_req);
+
+  iov = uv_buf_init(NULL, 0);
+  r = uv_fs_write(loop, &write_req, 0, &iov, 0, -1, fail_cb);
+  ASSERT(r == UV_EINVAL);
+  uv_run(loop, UV_RUN_DEFAULT);
   uv_fs_req_cleanup(&write_req);
 
   return 0;

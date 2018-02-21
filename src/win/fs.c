@@ -245,6 +245,7 @@ INLINE static void uv_fs_req_init(uv_loop_t* loop, uv_fs_t* req,
   req->ptr = NULL;
   req->path = NULL;
   req->cb = cb;
+  req->fs.info.bufs = NULL;
   memset(&req->fs, 0, sizeof(req->fs));
 }
 
@@ -723,11 +724,8 @@ void fs__write(uv_fs_t* req) {
 
 
 void fs__rmdir(uv_fs_t* req) {
-  if (RemoveDirectoryW(req->file.pathw)) {
-    SET_REQ_SUCCESS(req);
-  } else {
-    SET_REQ_WIN32_ERROR(req, GetLastError());
-  }
+  int result = _wrmdir(req->file.pathw);
+  SET_REQ_RESULT(req, result);
 }
 
 

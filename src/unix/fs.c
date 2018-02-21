@@ -74,16 +74,15 @@
 #define INIT(subtype)                                                         \
   do {                                                                        \
     if (req == NULL)                                                          \
-      return -EINVAL;                                                         \
-    req->type = UV_FS;                                                        \
-    if (cb != NULL)                                                           \
-      uv__req_init(loop, req, UV_FS);                                         \
+      return UV_EINVAL;                                                       \
+    UV_REQ_INIT(req, UV_FS);                                                  \
     req->fs_type = UV_FS_ ## subtype;                                         \
     req->result = 0;                                                          \
     req->ptr = NULL;                                                          \
     req->loop = loop;                                                         \
     req->path = NULL;                                                         \
     req->new_path = NULL;                                                     \
+    req->bufs = NULL;                                                         \
     req->cb = cb;                                                             \
   }                                                                           \
   while (0)
@@ -95,10 +94,8 @@
       req->path = path;                                                       \
     } else {                                                                  \
       req->path = uv__strdup(path);                                           \
-      if (req->path == NULL) {                                                \
-        uv__req_unregister(loop, req);                                        \
-        return -ENOMEM;                                                       \
-      }                                                                       \
+      if (req->path == NULL)                                                  \
+        return UV_ENOMEM;                                                     \
     }                                                                         \
   }                                                                           \
   while (0)
@@ -114,10 +111,8 @@
       path_len = strlen(path) + 1;                                            \
       new_path_len = strlen(new_path) + 1;                                    \
       req->path = uv__malloc(path_len + new_path_len);                        \
-      if (req->path == NULL) {                                                \
-        uv__req_unregister(loop, req);                                        \
-        return -ENOMEM;                                                       \
-      }                                                                       \
+      if (req->path == NULL)                                                  \
+        return UV_ENOMEM;                                                     \
       req->new_path = req->path + path_len;                                   \
       memcpy((void*) req->path, path, path_len);                              \
       memcpy((void*) req->new_path, new_path, new_path_len);                  \
@@ -128,6 +123,7 @@
 #define POST                                                                  \
   do {                                                                        \
     if (cb != NULL) {                                                         \
+      uv__req_register(loop, req);                                            \
       uv__work_submit(loop, &req->work_req, uv__fs_work, uv__fs_done);        \
       return 0;                                                               \
     }                                                                         \
@@ -341,7 +337,25 @@ static ssize_t uv__fs_read(uv_fs_t* req) {
     if (no_preadv) retry:
 # endif
     {
-      result = pread(req->file, req->bufs[0].base, req->bufs[0].len, req->off);
+      off_t nread;
+      size_t index;
+
+      nread = 0;
+      index = 0;
+      result = 1;
+      do {
+        if (req->bufs[index].len > 0) {
+          result = pread(req->file,
+                         req->bufs[index].base,
+                         req->bufs[index].len,
+                         req->off + nread);
+          if (result > 0)
+            nread += result;
+        }
+        index++;
+      } while (index < req->nbufs && result > 0);
+      if (nread > 0)
+        result = nread;
     }
 # if defined(__linux__)
     else {
@@ -945,7 +959,25 @@ static ssize_t uv__fs_write(uv_fs_t* req) {
     if (no_pwritev) retry:
 # endif
     {
-      r = pwrite(req->file, req->bufs[0].base, req->bufs[0].len, req->off);
+      off_t written;
+      size_t index;
+
+      written = 0;
+      index = 0;
+      r = 0;
+      do {
+        if (req->bufs[index].len > 0) {
+          r = pwrite(req->file,
+                     req->bufs[index].base,
+                     req->bufs[index].len,
+                     req->off + written);
+          if (r > 0)
+            written += r;
+        }
+        index++;
+      } while (index < req->nbufs && r >= 0);
+      if (written > 0)
+        r = written;
     }
 # if defined(__linux__)
     else {
@@ -1005,7 +1037,7 @@ static ssize_t uv__fs_copyfile(uv_fs_t* req) {
 
   /* Get the source file's mode. */
   if (fstat(srcfd, &statsbuf)) {
-    err = -errno;
+    err = UV__ERR(errno);
     goto out;
   }
 
@@ -1029,7 +1061,7 @@ static ssize_t uv__fs_copyfile(uv_fs_t* req) {
   }
 
   if (fchmod(dstfd, statsbuf.st_mode) == -1) {
-    err = -errno;
+    err = UV__ERR(errno);
     goto out;
   }
 
@@ -1195,19 +1227,6 @@ static int uv__fs_fstat(int fd, uv_stat_t *buf) {
   return ret;
 }
 
-static size_t uv__fs_buf_offset(uv_buf_t* bufs, size_t size) {
-  size_t offset;
-  /* Figure out which bufs are done */
-  for (offset = 0; size > 0 && bufs[offset].len <= size; ++offset)
-    size -= bufs[offset].len;
-
-  /* Fix a partial read/write */
-  if (size > 0) {
-    bufs[offset].base += size;
-    bufs[offset].len -= size;
-  }
-  return offset;
-}
 
 typedef ssize_t (*uv__fs_buf_iter_processor)(uv_fs_t* req);
 static ssize_t uv__fs_buf_iter(uv_fs_t* req, uv__fs_buf_iter_processor process) {
@@ -1227,10 +1246,7 @@ static ssize_t uv__fs_buf_iter(uv_fs_t* req, uv__fs_buf_iter_processor process) 
     if (req->nbufs > iovmax)
       req->nbufs = iovmax;
 
-    do
-      result = process(req);
-    while (result < 0 && errno == EINTR);
-
+    result = process(req);
     if (result <= 0) {
       if (total == 0)
         total = result;
@@ -1240,11 +1256,13 @@ static ssize_t uv__fs_buf_iter(uv_fs_t* req, uv__fs_buf_iter_processor process) 
     if (req->off >= 0)
       req->off += result;
 
-    req->nbufs = uv__fs_buf_offset(req->bufs, result);
     req->bufs += req->nbufs;
     nbufs -= req->nbufs;
     total += result;
   }
+
+  if (errno == EINTR && total == -1)
+    return total;
 
   if (bufs != req->bufsml)
     uv__free(bufs);
@@ -1312,7 +1330,7 @@ static void uv__fs_work(struct uv__work* w) {
   } while (r == -1 && errno == EINTR && retry_on_eintr);
 
   if (r == -1)
-    req->result = -errno;
+    req->result = UV__ERR(errno);
   else
     req->result = r;
 
@@ -1330,9 +1348,9 @@ static void uv__fs_done(struct uv__work* w, int status) {
   req = container_of(w, uv_fs_t, work_req);
   uv__req_unregister(req->loop, req);
 
-  if (status == -ECANCELED) {
+  if (status == UV_ECANCELED) {
     assert(req->result == 0);
-    req->result = -ECANCELED;
+    req->result = UV_ECANCELED;
   }
 
   req->cb(req);
@@ -1493,11 +1511,8 @@ int uv_fs_mkdtemp(uv_loop_t* loop,
                   uv_fs_cb cb) {
   INIT(MKDTEMP);
   req->path = uv__strdup(tpl);
-  if (req->path == NULL) {
-    if (cb != NULL)
-      uv__req_unregister(loop, req);
-    return -ENOMEM;
-  }
+  if (req->path == NULL)
+    return UV_ENOMEM;
   POST;
 }
 
@@ -1526,7 +1541,7 @@ int uv_fs_read(uv_loop_t* loop,
   INIT(READ);
 
   if (bufs == NULL || nbufs == 0)
-    return -EINVAL;
+    return UV_EINVAL;
 
   req->file = file;
 
@@ -1535,11 +1550,8 @@ int uv_fs_read(uv_loop_t* loop,
   if (nbufs > ARRAY_SIZE(req->bufsml))
     req->bufs = uv__malloc(nbufs * sizeof(*bufs));
 
-  if (req->bufs == NULL) {
-    if (cb != NULL)
-      uv__req_unregister(loop, req);
-    return -ENOMEM;
-  }
+  if (req->bufs == NULL)
+    return UV_ENOMEM;
 
   memcpy(req->bufs, bufs, nbufs * sizeof(*bufs));
 
@@ -1781,7 +1793,7 @@ int uv_fs_write(uv_loop_t* loop,
   INIT(WRITE);
 
   if (bufs == NULL || nbufs == 0)
-    return -EINVAL;
+    return UV_EINVAL;
 
   req->file = file;
 
@@ -1790,11 +1802,8 @@ int uv_fs_write(uv_loop_t* loop,
   if (nbufs > ARRAY_SIZE(req->bufsml))
     req->bufs = uv__malloc(nbufs * sizeof(*bufs));
 
-  if (req->bufs == NULL) {
-    if (cb != NULL)
-      uv__req_unregister(loop, req);
-    return -ENOMEM;
-  }
+  if (req->bufs == NULL)
+    return UV_ENOMEM;
 
   memcpy(req->bufs, bufs, nbufs * sizeof(*bufs));
 
@@ -1821,6 +1830,10 @@ void uv_fs_req_cleanup(uv_fs_t* req) {
   if (req->fs_type == UV_FS_SCANDIR && req->ptr != NULL)
     uv__fs_scandir_cleanup(req);
 
+  if (req->bufs != req->bufsml)
+    uv__free(req->bufs);
+  req->bufs = NULL;
+
   if (req->ptr != &req->statbuf)
     uv__free(req->ptr);
   req->ptr = NULL;
@@ -1836,7 +1849,7 @@ int uv_fs_copyfile(uv_loop_t* loop,
   INIT(COPYFILE);
 
   if (flags & ~UV_FS_COPYFILE_EXCL)
-    return -EINVAL;
+    return UV_EINVAL;
 
   PATH2;
   req->flags = flags;
