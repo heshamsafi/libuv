@@ -3271,3 +3271,41 @@ TEST_IMPL(fs_exclusive_sharing_mode) {
   return 0;
 }
 #endif
+
+TEST_IMPL(fs_read_xattr) {
+  int r;
+  char keys[] = "user.fileType" "\0"
+                "user.fileType2" "\0"
+                "user.fileSizeInLikeDesc";
+  char* values = malloc(500);
+  static uv_buf_t iova[2];
+  int i;
+
+  loop = uv_default_loop();
+
+  r = uv_fs_open(loop, &open_req1, "test_file.hesham", O_RDONLY, S_IWUSR | S_IRUSR, NULL);
+  ASSERT(r >= 0);
+  ASSERT(open_req1.result >= 0);
+  uv_fs_req_cleanup(&open_req1);
+
+  iova[0] = uv_buf_init(keys, sizeof(keys));
+  iova[1] = uv_buf_init(values, 500);
+  r = uv_fs_read_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
+
+  ASSERT(r >= 0);
+  ASSERT(read_req.result >= 0);
+  uv_fs_req_cleanup(&read_req);
+
+  for(i = 0; i < 500; ++i) {
+    if(iova[1].base[i] == 0) printf("*");
+    else printf("%c", iova[1].base[i]);
+  }
+
+  r = uv_fs_close(NULL, &close_req, open_req1.result, NULL);
+  ASSERT(r == 0);
+  ASSERT(close_req.result == 0);
+  uv_fs_req_cleanup(&close_req);
+
+  MAKE_VALGRIND_HAPPY();
+  return -1;
+}

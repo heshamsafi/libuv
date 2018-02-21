@@ -64,6 +64,13 @@
 # include <copyfile.h>
 #endif
 
+#if defined(__FreeBSD__)
+# include <sys/extattr.h>
+#else
+# include <sys/xattr.h>
+#endif
+
+
 #define INIT(subtype)                                                         \
   do {                                                                        \
     if (req == NULL)                                                          \
@@ -355,6 +362,222 @@ done:
   return result;
 }
 
+/*shims*/
+
+static ssize_t uv__fgetxattr(int fd, const char *name, void *value, size_t size) {
+  ssize_t nread;    
+#if defined(__OpenBSD__) || defined(__APPLE__)
+  nread = fgetxattr(fd, name, value, size,0,0);
+#elif defined(__FreeBSD__)
+  nread = extattr_get_fd(fd, EXTATTR_NAMESPACE_USER, name, value, size);
+#else
+  nread = fgetxattr(fd, name, value, size);
+#endif
+  return nread;
+}
+/*end shims*/
+
+static ssize_t uv__fs_read_xattr(uv_fs_t* req) {
+  size_t remaining_buf_size = req->bufs[1].len;
+  size_t value_size;
+  ssize_t xattr_count;
+  const char* key;
+  char *value;
+
+  xattr_count = 0;
+  key = req->bufs[0].base;
+  value = req->bufs[1].base;
+  while(key - req->bufs[0].base < (long)req->bufs[0].len) {
+    value_size = uv__fgetxattr(req->file, key, value, remaining_buf_size - 1);
+    printf("%s %s %d\n", key, value, value_size);
+    remaining_buf_size -= value_size + 1;
+    value += value_size;
+    *value++ = '\0';
+    key += strlen(key) + 1;
+    ++xattr_count;
+  }
+
+#if 0
+  for(index=0, xattr_count=0; index < req->nbufs; ++index){
+    key = *iterator++;
+    value = *iterator++;
+    if (key->len <= 0) continue;
+#if defined(__OpenBSD__) || defined(__APPLE__)
+    xattr_length = fgetxattr(req->file,key->base, 0,0,0,0);
+#elif defined(__FreeBSD__)
+    xattr_length = extattr_get_fd(req->file, EXTATTR_NAMESPACE_USER, key->base, 0, 0);
+#else
+    xattr_length = fgetxattr(req->file,key->base, 0,0);
+#endif
+    if(xattr_length < 0){
+      value->base[0] = '\0';
+      value->len = UV_ENOATTR;
+    }else if((size_t)xattr_length >= value->len){
+      value->base[0] = '\0';
+      value->len = xattr_length+1;
+    }else{
+#if defined(__OpenBSD__) || defined(__APPLE__)
+      nread = fgetxattr(req->file,key->base, value->base, value->len,0,0);
+#elif defined(__FreeBSD__)
+      nread = extattr_get_fd(req->file, EXTATTR_NAMESPACE_USER, key->base, value->base, value->len);
+#else
+      nread = fgetxattr(req->file,key->base, value->base, value->len);
+#endif
+      assert(nread == xattr_length);
+      value->base[nread] = '\0';
+      ++xattr_count;
+    }
+  }
+#endif
+
+/*done:*/
+  if (req->bufs != req->bufsml)
+    uv__free(req->bufs);
+  return xattr_count;
+}
+
+static ssize_t uv__fs_remove_xattr(uv_fs_t* req) {
+#if 0  
+  uv_buf_t* key;
+  uv_buf_t** iterator = &req->bufs;
+  int success;
+  ssize_t xattrs_count, index;
+  for(index = 0, xattrs_count = 0; index < req->xattr.count; ++index){
+    key = *iterator++;
+#if defined(__OpenBSD__) || defined(__APPLE__)
+    success = fremovexattr(req->file, key->base,0);
+#elif defined(__FreeBSD__)
+    success = extattr_delete_fd(req->file, EXTATTR_NAMESPACE_USER, key->base);
+#else
+    success = fremovexattr(req->file, key->base);
+#endif
+    if(success < 0) {
+      key->len = -errno;
+    } else {
+      ++xattrs_count;
+    }
+  }
+
+  if (req->bufs != req->bufsml)
+    uv__free(req->bufs);
+  return xattrs_count;
+#endif
+  return 0;
+}
+
+static ssize_t uv__fs_list_xattr(uv_fs_t* req) {
+#if 0
+  uv_buf_t* key;
+  uv_buf_t** iterator = &req->bufs;
+  size_t key_size;
+  ssize_t offset,index;
+  const int temp_buffer_size 
+#if defined(__OpenBSD__) || defined(__APPLE__)
+    = flistxattr(req->file, 0, 0, 0);
+#elif defined(__FreeBSD__)
+    = extattr_list_fd(req->file, EXTATTR_NAMESPACE_USER, 0, 0);
+#else
+    = flistxattr(req->file, 0, 0);
+#endif
+  const char* temp_buffer = uv__malloc(temp_buffer_size);
+  const char * const temp_buffer_head = temp_buffer;
+#if defined(__OpenBSD__) || defined(__APPLE__)
+  flistxattr(req->file,(char*)temp_buffer,temp_buffer_size,0);
+#elif defined(__FreeBSD__)
+  extattr_list_fd(req->file, EXTATTR_NAMESPACE_USER,  (char*)temp_buffer, temp_buffer_size);
+#else
+  flistxattr(req->file,(char*)temp_buffer,temp_buffer_size);
+#endif
+  for(index = 0, offset = 0, key_size = 0; offset < temp_buffer_size; ++index, offset += key_size){
+    if(index >= (int)req->xattr.count){
+      continue; /*the buffer is full, now we are just looping to count the keys*/
+    }
+    key = *iterator++;
+    key_size 
+#if defined(__OpenBSD__) || defined(__APPLE__)
+      = ((char)*((temp_buffer++) + offset));/* read the size from the first byte and advance the pointer by 1 */
+#else
+      = strlen(&temp_buffer[offset])+1;/* null terminated string */
+#endif
+    if(key_size <= key->len){
+      memcpy(key->base, temp_buffer + offset, key_size);
+    } else{
+      key->len = key_size;
+    }
+    if(temp_buffer[offset + key_size] == '\0')
+      break;
+  }
+  if(index > req->xattr.count) {
+    req->xattr.count = index;
+    errno = -UV_ENOBUFS;
+    index = -1;
+  } else {
+    req->xattr.count = index;
+  }
+/*done:*/
+  if (req->bufs != req->bufsml)
+    uv__free(req->bufs);
+  uv__free((char*)temp_buffer_head);
+  return index;
+#endif
+  return 0;
+}
+
+static ssize_t uv__fs_write_xattr(uv_fs_t* req) {
+#if 0
+  ssize_t index,  xattr_count;
+  int r,xattr_length;
+  uv_buf_t* key, *value;
+  uv_buf_t** iterator = &req->bufs;
+  for(index=0,xattr_count=0;index<req->xattr.count;++index){
+    key = *iterator++;
+    value = *iterator++;
+    if (key->len <= 0) continue;
+#if defined(__OpenBSD__) || defined(__APPLE__)
+    xattr_length = fgetxattr(req->file,key->base, 0,0,0,0);
+#elif defined(__FreeBSD__)
+    xattr_length = extattr_get_fd(req->file, EXTATTR_NAMESPACE_USER, key->base, 0, 0);
+#else
+    xattr_length = fgetxattr(req->file,key->base, 0,0);
+#endif
+    if(xattr_length !=0 && value->base[0] == '\0' && errno == UV_ENOATTR){
+      key->len = -errno;
+      continue;
+    } 
+    r = (value->base[0] =='\0')?
+#if defined(__OpenBSD__) || defined(__APPLE__)
+             fremovexattr(req->file, key->base, 0):
+#elif defined(__FreeBSD__)
+             extattr_delete_fd(req->file, EXTATTR_NAMESPACE_USER, key->base):
+#else
+             fremovexattr(req->file, key->base):
+#endif
+#if defined(__OpenBSD__) || defined(__APPLE__)
+             fsetxattr(req->file, key->base, value->base,
+                       strlen(value->base), 0,
+                       (xattr_length != 0 && errno == -UV_ENOATTR)?
+                       XATTR_CREATE:XATTR_REPLACE);
+#elif defined(__FreeBSD__)
+              extattr_set_fd(req->file, EXTATTR_NAMESPACE_USER, key->base, value->base, strlen(value->base));
+#else
+    fsetxattr(req->file,key->base, value->base,
+        strlen(value->base),
+        (xattr_length != 0 && errno == -UV_ENOATTR)?
+        XATTR_CREATE : XATTR_REPLACE);
+#endif
+    if(r < 0) {/*error*/
+      key->len = -errno;
+    } else {/*success*/
+      ++xattr_count;
+    }
+  }
+
+  if (req->bufs != req->bufsml)
+    uv__free(req->bufs);
+  return xattr_count;
+#endif
+  return 0;
+}
 
 #if defined(__APPLE__) && !defined(MAC_OS_X_VERSION_10_8)
 #define UV_CONST_DIRENT uv__dirent_t
@@ -1079,6 +1302,10 @@ static void uv__fs_work(struct uv__work* w) {
     X(UNLINK, unlink(req->path));
     X(UTIME, uv__fs_utime(req));
     X(WRITE, uv__fs_buf_iter(req, uv__fs_write));
+    X(READ_XATTR, uv__fs_read_xattr(req));
+    X(WRITE_XATTR, uv__fs_write_xattr(req));
+    X(REMOVE_XATTR, uv__fs_remove_xattr(req));
+    X(LIST_XATTR, uv__fs_list_xattr(req));
     default: abort();
     }
 #undef X
@@ -1289,7 +1516,8 @@ int uv_fs_open(uv_loop_t* loop,
 }
 
 
-int uv_fs_read(uv_loop_t* loop, uv_fs_t* req,
+int uv_fs_read(uv_loop_t* loop, 
+               uv_fs_t* req,
                uv_file file,
                const uv_buf_t bufs[],
                unsigned int nbufs,
@@ -1316,6 +1544,122 @@ int uv_fs_read(uv_loop_t* loop, uv_fs_t* req,
   memcpy(req->bufs, bufs, nbufs * sizeof(*bufs));
 
   req->off = off;
+  POST;
+}
+
+int uv_fs_read_xattr(uv_loop_t* loop,
+                     uv_fs_t* req,
+                     uv_file file,
+                     const uv_buf_t bufs[],
+                     unsigned int nbufs,
+                     uv_fs_cb cb){
+  INIT(READ_XATTR);
+
+  if (bufs == NULL || nbufs == 0)
+    return -EINVAL;
+
+  req->file = file;
+
+  req->nbufs = nbufs;
+  req->bufs = req->bufsml;
+  if (nbufs > ARRAY_SIZE(req->bufsml))
+    req->bufs = uv__malloc(nbufs * sizeof(*bufs));
+
+  if (req->bufs == NULL) {
+    if (cb != NULL)
+      uv__req_unregister(loop, req);
+    return -ENOMEM;
+  }
+
+  memcpy(req->bufs, bufs, nbufs * sizeof(*bufs));
+
+  POST;
+}
+
+int uv_fs_write_xattr(uv_loop_t* loop,
+                      uv_fs_t* req,
+                      uv_file file,
+                      const uv_buf_t bufs[],
+                      unsigned int nbufs,
+                     uv_fs_cb cb){
+  INIT(WRITE_XATTR);
+
+  if (bufs == NULL || nbufs == 0)
+    return -EINVAL;
+
+  req->file = file;
+
+  req->nbufs = nbufs;
+  req->bufs = req->bufsml;
+  if (nbufs > ARRAY_SIZE(req->bufsml))
+    req->bufs = uv__malloc(nbufs * sizeof(*bufs));
+
+  if (req->bufs == NULL) {
+    if (cb != NULL)
+      uv__req_unregister(loop, req);
+    return -ENOMEM;
+  }
+
+  memcpy(req->bufs, bufs, nbufs * sizeof(*bufs));
+
+  POST;
+}
+
+int uv_fs_remove_xattr(uv_loop_t* loop,
+                       uv_fs_t* req,
+                       uv_file file,
+                       const uv_buf_t bufs[],
+                       unsigned int nbufs,
+                       uv_fs_cb cb) {
+  INIT(REMOVE_XATTR);
+
+  if (bufs == NULL || nbufs == 0)
+    return -EINVAL;
+
+  req->file = file;
+
+  req->nbufs = nbufs;
+  req->bufs = req->bufsml;
+  if (nbufs > ARRAY_SIZE(req->bufsml))
+    req->bufs = uv__malloc(nbufs * sizeof(*bufs));
+
+  if (req->bufs == NULL) {
+    if (cb != NULL)
+      uv__req_unregister(loop, req);
+    return -ENOMEM;
+  }
+
+  memcpy(req->bufs, bufs, nbufs * sizeof(*bufs));
+
+  POST;
+}
+
+int uv_fs_list_xattr(uv_loop_t* loop,
+                     uv_fs_t* req,
+                     uv_file file,
+                     const uv_buf_t bufs[],
+                     unsigned int nbufs,
+                     uv_fs_cb cb) {
+  INIT(LIST_XATTR);
+
+  if (bufs == NULL || nbufs == 0)
+    return -EINVAL;
+
+  req->file = file;
+
+  req->nbufs = nbufs;
+  req->bufs = req->bufsml;
+  if (nbufs > ARRAY_SIZE(req->bufsml))
+    req->bufs = uv__malloc(nbufs * sizeof(*bufs));
+
+  if (req->bufs == NULL) {
+    if (cb != NULL)
+      uv__req_unregister(loop, req);
+    return -ENOMEM;
+  }
+
+  memcpy(req->bufs, bufs, nbufs * sizeof(*bufs));
+
   POST;
 }
 

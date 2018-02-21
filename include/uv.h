@@ -142,6 +142,7 @@ extern "C" {
   XX(EHOSTDOWN, "host is down")                                               \
   XX(EREMOTEIO, "remote I/O error")                                           \
   XX(ENOTTY, "inappropriate ioctl for device")                                \
+  XX(ENOATTR, "attribute not found")                                          \
 
 #define UV_HANDLE_TYPE_MAP(XX)                                                \
   XX(ASYNC, async)                                                            \
@@ -1134,7 +1135,11 @@ typedef enum {
   UV_FS_CHOWN,
   UV_FS_FCHOWN,
   UV_FS_REALPATH,
-  UV_FS_COPYFILE
+  UV_FS_COPYFILE,
+  UV_FS_READ_XATTR,
+  UV_FS_WRITE_XATTR,
+  UV_FS_REMOVE_XATTR,
+  UV_FS_LIST_XATTR
 } uv_fs_type;
 
 /* uv_fs_t is a subclass of uv_req_t. */
@@ -1174,6 +1179,30 @@ UV_EXTERN int uv_fs_read(uv_loop_t* loop,
                          unsigned int nbufs,
                          int64_t offset,
                          uv_fs_cb cb);
+UV_EXTERN int uv_fs_read_xattr(uv_loop_t* loop,
+                               uv_fs_t* req,
+                               uv_file file,
+                               const uv_buf_t bufs[],
+                               unsigned int nbufs,
+                               uv_fs_cb cb);
+UV_EXTERN int uv_fs_write_xattr(uv_loop_t* loop,
+                                uv_fs_t* req,
+                                uv_file file,
+                                const uv_buf_t bufs[],
+                                unsigned int nbufs,
+                                uv_fs_cb cb);
+UV_EXTERN int uv_fs_remove_xattr(uv_loop_t* loop,
+                                 uv_fs_t* req,
+                                 uv_file file,
+                                 const uv_buf_t bufs[],
+                                 unsigned int nbufs,
+                                 uv_fs_cb cb);
+UV_EXTERN int uv_fs_list_xattr(uv_loop_t* loop,
+                               uv_fs_t* req,
+                               uv_file file,
+                               const uv_buf_t bufs[],
+                               unsigned int nbufs,
+                               uv_fs_cb cb);
 UV_EXTERN int uv_fs_unlink(uv_loop_t* loop,
                            uv_fs_t* req,
                            const char* path,
