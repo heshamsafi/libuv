@@ -420,7 +420,7 @@ TEST_DECLARE  (fork_fs_events_file_parent_child)
 TEST_DECLARE  (fork_threadpool_queue_work_simple)
 #endif
 #endif
-TEST_DECLARE(fs_read_xattr)
+TEST_DECLARE(fs_xattr)
 
 TASK_LIST_START
   TEST_ENTRY_CUSTOM (platform_output, 0, 1, 5000)
@@ -897,7 +897,7 @@ TASK_LIST_START
   TEST_ENTRY  (fork_threadpool_queue_work_simple)
 #endif
 #endif
-  TEST_ENTRY(fs_read_xattr)
+  TEST_ENTRY(fs_xattr)
 
 #if 0
   /* These are for testing the test runner. */

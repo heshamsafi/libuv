@@ -3173,39 +3173,89 @@ TEST_IMPL(fs_exclusive_sharing_mode) {
 }
 #endif
 
-TEST_IMPL(fs_read_xattr) {
-  int r;
-  char keys[] = "user.fileType" "\0"
-                "user.fileType2" "\0"
-                "user.fileSizeInLikeDesc";
-  char* values = malloc(500);
+TEST_IMPL(fs_xattr) {
+  int r, i;
   static uv_buf_t iova[2];
-  int i;
+  char key[] = "user.xattr_keyn";
+  char value_write_buffer[] = "xattr_valuen";
+  char* value_read_buffer = malloc(500);
+
+  iova[0] = uv_buf_init(key, sizeof(key));
 
   loop = uv_default_loop();
 
-  r = uv_fs_open(loop, &open_req1, "test_file.hesham", O_RDONLY, S_IWUSR | S_IRUSR, NULL);
+  unlink("test_file");
+
+  r = uv_fs_open(loop, &open_req1, "test_file", O_RDWR | O_CREAT, S_IWUSR | S_IRUSR, NULL);
   ASSERT(r >= 0);
   ASSERT(open_req1.result >= 0);
   uv_fs_req_cleanup(&open_req1);
 
-  iova[0] = uv_buf_init(keys, sizeof(keys));
-  iova[1] = uv_buf_init(values, 500);
-  r = uv_fs_read_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
-
+  
+  iova[1] = uv_buf_init(value_read_buffer, 500);
+  /*list all keys*/
+  memset(iova[1].base, '\0', iova[1].len);
+  r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
   ASSERT(r >= 0);
   ASSERT(read_req.result >= 0);
   uv_fs_req_cleanup(&read_req);
+  printf("%s %d\n", iova[1].base, r);
 
-  for(i = 0; i < 500; ++i) {
-    if(iova[1].base[i] == 0) printf("*");
-    else printf("%c", iova[1].base[i]);
+  iova[1] = uv_buf_init(value_write_buffer, sizeof(value_write_buffer));
+  /*write*/
+  for(i = 0; i < 10; ++i) { /*must be single digit*/
+    key[sizeof(key)-2] = i + '0';
+    value_write_buffer[sizeof(value_write_buffer)-2] = i + '0';
+    r = uv_fs_write_xattr(NULL, &write_req, open_req1.result, iova, 2, NULL);
+    ASSERT(r >= 0);
+    ASSERT(write_req.result >= 0);
+    uv_fs_req_cleanup(&write_req);
   }
+
+  iova[1] = uv_buf_init(value_read_buffer, 500);
+  /*list all keys*/
+  memset(iova[1].base, '\0', iova[1].len);
+  r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
+  ASSERT(r >= 0);
+  ASSERT(read_req.result >= 0);
+  uv_fs_req_cleanup(&read_req);
+  printf("%s %d\n", iova[1].base, r);
+
+  /*read values one by one*/
+  for(i = 0; i < 10; ++i) { /*must be single digit*/
+    key[sizeof(key)-2] = i + '0';
+    r = uv_fs_read_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
+    ASSERT(r >= 0);
+    ASSERT(read_req.result >= 0);
+    uv_fs_req_cleanup(&read_req);
+    printf("%s %d\n", iova[1].base, r);
+  }
+
+  /*remove xattrs one by one*/
+  iova[1] = uv_buf_init(value_read_buffer, 500);
+  for(i = 0; i < 10; ++i) { /*must be single digit*/
+    key[sizeof(key)-2] = i + '0';
+    r = uv_fs_remove_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
+    ASSERT(r >= 0);
+    ASSERT(read_req.result >= 0);
+    uv_fs_req_cleanup(&read_req);
+    printf("%d\n", r);
+  }
+
+  /*list all keys*/
+  memset(iova[1].base, '\0', iova[1].len);
+  r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
+  ASSERT(r >= 0);
+  ASSERT(read_req.result >= 0);
+  uv_fs_req_cleanup(&read_req);
+  printf("%s %d\n", iova[1].base, r);
 
   r = uv_fs_close(NULL, &close_req, open_req1.result, NULL);
   ASSERT(r == 0);
   ASSERT(close_req.result == 0);
   uv_fs_req_cleanup(&close_req);
+
+  unlink("test_file");
 
   MAKE_VALGRIND_HAPPY();
   return -1;
