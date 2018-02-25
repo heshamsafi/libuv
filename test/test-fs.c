@@ -3178,7 +3178,8 @@ TEST_IMPL(fs_xattr) {
   static uv_buf_t iova[2];
   char key[] = "user.xattr_keyn";
   char value_write_buffer[] = "xattr_valuen";
-  char* value_read_buffer = malloc(500);
+  char value_read_buffer[1024];/* 1KB buffer */
+  char* str_iterator = NULL;
 
   iova[0] = uv_buf_init(key, sizeof(key));
 
@@ -3191,64 +3192,126 @@ TEST_IMPL(fs_xattr) {
   ASSERT(open_req1.result >= 0);
   uv_fs_req_cleanup(&open_req1);
 
-  
-  iova[1] = uv_buf_init(value_read_buffer, 500);
-  /*list all keys*/
+
+  /*list all keys should be none*/
+  iova[1] = uv_buf_init(value_read_buffer, sizeof(value_read_buffer));
   memset(iova[1].base, '\0', iova[1].len);
   r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
-  ASSERT(r >= 0);
-  ASSERT(read_req.result >= 0);
+  ASSERT(r == 0); /*empty xattr list expected*/
+  ASSERT(strlen(iova[1].base) == 0);
+  ASSERT(read_req.result == r);
   uv_fs_req_cleanup(&read_req);
-  printf("%s %d\n", iova[1].base, r);
 
+  /*write keys*/
   iova[1] = uv_buf_init(value_write_buffer, sizeof(value_write_buffer));
-  /*write*/
+  memset(iova[1].base, '\0', iova[1].len);
   for(i = 0; i < 10; ++i) { /*must be single digit*/
-    key[sizeof(key)-2] = i + '0';
-    value_write_buffer[sizeof(value_write_buffer)-2] = i + '0';
+    iova[0].base[sizeof(key)-2] = i + '0'; /*append index to key string*/
+    iova[1].base[sizeof(value_write_buffer)-2] = i + '0';
     r = uv_fs_write_xattr(NULL, &write_req, open_req1.result, iova, 2, NULL);
-    ASSERT(r >= 0);
-    ASSERT(write_req.result >= 0);
+    ASSERT(r == 0);
+    ASSERT(write_req.result == r);
     uv_fs_req_cleanup(&write_req);
   }
 
-  iova[1] = uv_buf_init(value_read_buffer, 500);
   /*list all keys*/
+  iova[1] = uv_buf_init(value_read_buffer, sizeof(value_read_buffer));
   memset(iova[1].base, '\0', iova[1].len);
   r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
-  ASSERT(r >= 0);
-  ASSERT(read_req.result >= 0);
+  ASSERT(r == sizeof(key) * 10);
+  ASSERT(read_req.result == r);
+
+  str_iterator = iova[1].base;
+  for(i = 0; i < 10; ++i) {
+    key[sizeof(key)-2] = i + '0';
+    ASSERT(strcmp(key, str_iterator) == 0);
+    str_iterator += sizeof(key);
+  }
   uv_fs_req_cleanup(&read_req);
-  printf("%s %d\n", iova[1].base, r);
+
+  /*list all keys with a small buffer*/
+  iova[1] = uv_buf_init(value_read_buffer, 1);
+  memset(iova[1].base, '\0', iova[1].len);
+  r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
+  ASSERT(r == UV_ERANGE);
+  ASSERT(strlen(iova[1].base) == 0);
+  ASSERT(read_req.result == r);
+  uv_fs_req_cleanup(&read_req);
 
   /*read values one by one*/
+  iova[1] = uv_buf_init(value_read_buffer, sizeof(value_read_buffer));
+  memset(iova[1].base, '\0', iova[1].len);
   for(i = 0; i < 10; ++i) { /*must be single digit*/
     key[sizeof(key)-2] = i + '0';
     r = uv_fs_read_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
-    ASSERT(r >= 0);
-    ASSERT(read_req.result >= 0);
+    value_write_buffer[sizeof(value_write_buffer)-2] = i + '0';
+    ASSERT(r == sizeof(value_write_buffer));
+    ASSERT(read_req.result == r);
+    ASSERT(strcmp(value_write_buffer, iova[1].base) == 0);
     uv_fs_req_cleanup(&read_req);
-    printf("%s %d\n", iova[1].base, r);
+  }
+
+  /*read with small buffer*/
+  iova[1] = uv_buf_init(value_read_buffer, 1); /* buffer not large enough */
+  memset(iova[1].base, '\0', iova[1].len);
+  for(i = 0; i < 10; ++i) { /*must be single digit*/
+    key[sizeof(key)-2] = i + '0';
+    r = uv_fs_read_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
+    ASSERT(r == UV_ERANGE);
+    ASSERT(read_req.result == r);
+    ASSERT(strlen(iova[1].base) == 0);
+    uv_fs_req_cleanup(&read_req);
+  }
+
+  /*query required buffer size by passing a 0 size buffer */
+  iova[1] = uv_buf_init(value_read_buffer, 0); 
+  memset(iova[1].base, '\0', iova[1].len);
+  for(i = 0; i < 10; ++i) { /*must be single digit*/
+    key[sizeof(key)-2] = i + '0';
+    r = uv_fs_read_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
+    ASSERT(r == sizeof(value_write_buffer));
+    ASSERT(read_req.result == r);
+    ASSERT(strlen(iova[1].base) == 0);
+    uv_fs_req_cleanup(&read_req);
   }
 
   /*remove xattrs one by one*/
-  iova[1] = uv_buf_init(value_read_buffer, 500);
   for(i = 0; i < 10; ++i) { /*must be single digit*/
     key[sizeof(key)-2] = i + '0';
-    r = uv_fs_remove_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
-    ASSERT(r >= 0);
-    ASSERT(read_req.result >= 0);
+    r = uv_fs_remove_xattr(NULL, &read_req, open_req1.result, iova, 1, NULL);
+    ASSERT(r == 0);
+    ASSERT(read_req.result == r);
     uv_fs_req_cleanup(&read_req);
-    printf("%d\n", r);
   }
 
-  /*list all keys*/
+  /*remove xattrs one by one if they don't exist*/
+  for(i = 0; i < 10; ++i) { /*must be single digit*/
+    key[sizeof(key)-2] = i + '0';
+    r = uv_fs_remove_xattr(NULL, &read_req, open_req1.result, iova, 1, NULL);
+    ASSERT(r == UV_ENOATTR);
+    ASSERT(read_req.result == r);
+    uv_fs_req_cleanup(&read_req);
+  }
+
+  /*list all keys even though there are none*/
+  iova[1] = uv_buf_init(value_read_buffer, sizeof(value_read_buffer));
   memset(iova[1].base, '\0', iova[1].len);
   r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
-  ASSERT(r >= 0);
-  ASSERT(read_req.result >= 0);
+  ASSERT(r == 0);
+  ASSERT(read_req.result == r);
+  ASSERT(strlen(iova[1].base) == 0);
   uv_fs_req_cleanup(&read_req);
-  printf("%s %d\n", iova[1].base, r);
+
+  /*read values one by one that don't exist*/
+  memset(iova[1].base, '\0', iova[1].len);
+  for(i = 0; i < 10; ++i) { /*must be single digit*/
+    key[sizeof(key)-2] = i + '0';
+    r = uv_fs_read_xattr(NULL, &read_req, open_req1.result, iova, 2, NULL);
+    ASSERT(r == UV_ENOATTR);
+    ASSERT(read_req.result == r);
+    ASSERT(strlen(iova[1].base) == 0);
+    uv_fs_req_cleanup(&read_req);
+  }
 
   r = uv_fs_close(NULL, &close_req, open_req1.result, NULL);
   ASSERT(r == 0);
@@ -3258,5 +3321,5 @@ TEST_IMPL(fs_xattr) {
   unlink("test_file");
 
   MAKE_VALGRIND_HAPPY();
-  return -1;
+  return 0;
 }
