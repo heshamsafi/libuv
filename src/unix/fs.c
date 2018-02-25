@@ -383,25 +383,55 @@ done:
 /*shims*/
 
 static ssize_t uv__fgetxattr(int fd, const char *name, void *value, size_t size) {
-  ssize_t r = 
 #if defined(__OpenBSD__) || defined(__APPLE__)
-  fgetxattr(fd, name, value, size,0,0);
+  ssize_t r = fgetxattr(fd, name, value, size,0,0);
 #elif defined(__FreeBSD__)
-  extattr_get_fd(fd, EXTATTR_NAMESPACE_USER, name, value, size);
+  ssize_t r = extattr_get_fd(fd, EXTATTR_NAMESPACE_USER, name, NULL, 0);
+  if (r < (ssize_t)size) {
+    r = extattr_get_fd(fd, EXTATTR_NAMESPACE_USER, name, value, size);
+    ((char*)value)[r] = '\0';
+  } else if (size > 0) { 
+    /* freebsd actually fills the buffer even if
+     * it is not big enough to read all the data
+     * so we have to do this
+     * and prevent this behaviour */
+    errno = -UV_ERANGE;
+    r = -1;
+  } 
 #else
-  fgetxattr(fd, name, value, size);
+  ssize_t r = fgetxattr(fd, name, value, size);
 #endif
   return r;
 }
 
 static ssize_t uv__flistxattr(int fd, char *buffer, size_t size) {
-  ssize_t r =   
 #if defined(__OpenBSD__) || defined(__APPLE__)
-  flistxattr(fd, buffer, size,0);
+  ssize_t r = flistxattr(fd, buffer, size,0);
 #elif defined(__FreeBSD__)
-  extattr_list_fd(fd, EXTATTR_NAMESPACE_USER, buffer, size);
+  ssize_t r = extattr_list_fd(fd, EXTATTR_NAMESPACE_USER, NULL, 0);
+  char key_size;
+  char* iterator;
+  int i;
+  if (r <= (ssize_t)size) {
+    r = extattr_list_fd(fd, EXTATTR_NAMESPACE_USER, buffer, size);
+    iterator = buffer;
+    i = r;
+    while(i-- > 0) {
+      key_size = iterator[0];
+      while(key_size-- > 0) {
+        iterator[0] = iterator[1];
+        ++iterator;
+        --i;
+      }
+      iterator[0] = '\0';
+      ++iterator;
+    }
+  } else if (size > 0){
+    errno = -UV_ERANGE;
+    r = -1;
+  }
 #else
-  flistxattr(fd, buffer, size);
+  ssize_t r = flistxattr(fd, buffer, size);
 #endif
   return r;
 }
@@ -427,6 +457,10 @@ static ssize_t uv__fsetxattr(int fd, const char *key, const char* value, size_t 
 #else
   fsetxattr(fd, key, value, size, 0);
 #endif
+  /* bsd returns number of bytes written 
+   * linux returns 0 for success
+   */
+  r = r > 0? 0 : r;
   return r;
 }
   /*end shims*/

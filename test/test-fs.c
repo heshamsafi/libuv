@@ -3230,9 +3230,10 @@ TEST_IMPL(fs_xattr) {
   uv_fs_req_cleanup(&read_req);
 
   /*list all keys with a small buffer*/
-  iova[1] = uv_buf_init(value_read_buffer, 1);
+  iova[1] = uv_buf_init(value_read_buffer, 5);
   memset(iova[1].base, '\0', iova[1].len);
   r = uv_fs_list_xattr(NULL, &read_req, open_req1.result, &iova[1], 1, NULL);
+  printf("%d\n", r);
   ASSERT(r == UV_ERANGE);
   ASSERT(strlen(iova[1].base) == 0);
   ASSERT(read_req.result == r);
