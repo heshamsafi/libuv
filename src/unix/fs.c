@@ -64,7 +64,11 @@
 # include <copyfile.h>
 #endif
 
-#if defined(__FreeBSD__)
+#if defined(__DragonFly__)        ||                                      \
+    defined(__FreeBSD__)          ||                                      \
+    defined(__FreeBSD_kernel_)    ||                                      \
+    defined(__OpenBSD__)          ||                                      \
+    defined(__NetBSD__)
 # include <sys/extattr.h>
 #else
 # include <sys/xattr.h>
