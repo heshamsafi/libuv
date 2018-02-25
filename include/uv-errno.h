@@ -433,11 +433,11 @@
 # define UV__ENOTTY (-4029)
 #endif
 
-#if !defined(__WIN32)
+#if !defined(ENOATTR)
 #define ENOATTR ENODATA
 #else
 #define ENOATTR -1
 #endif
-#define UV__ENOATTR -ENOATTR
+#define UV__ENOATTR UV__ERR(ENOATTR)
 
 #endif /* UV_ERRNO_H_ */
