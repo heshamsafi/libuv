@@ -435,7 +435,7 @@
 
 #if !defined(__WIN32)
 #define ENOATTR ENODATA
-#elif 
+#else
 #define ENOATTR -1
 #endif
 #define UV__ENOATTR -ENOATTR
