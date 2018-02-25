@@ -433,7 +433,7 @@
 # define UV__ENOTTY (-4029)
 #endif
 
-#if !defined(ENOATTR)
+#if defined(ENODATA)
 #define ENOATTR ENODATA
 #else
 #define ENOATTR -1
